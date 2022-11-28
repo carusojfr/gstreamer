@@ -1,14 +1,22 @@
 #include <QQuickWindow>
 #include <QQmlEngine>
 #include <QRunnable>
+#include <QtGlobal>
+#include <memory>
+#include <utility>
 
 #include <gst/gst.h>
 #include <gst/gl/gl.h>
 
 #include "videoitem.h"
 
+GST_DEBUG_CATEGORY_STATIC(video_item);
+#define GST_CAT_DEFAULT video_item
+
 static void registerMetatypes()
 {
+    GST_DEBUG_CATEGORY_INIT(video_item, "videoitem", 0, "video item category");
+
     qmlRegisterType<VideoItem>("ACME.VideoItem", 1, 0, "VideoItem");
     qRegisterMetaType<VideoItem::State>("VideoItem::State");
 }
@@ -67,9 +75,9 @@ struct VideoItemPrivate {
 struct RenderJob : public QRunnable {
     using Callable = std::function<void()>;
 
-    explicit RenderJob(Callable c) : _c(c) { }
+    explicit RenderJob(Callable c) : _c(std::move(c)) { }
 
-    void run() { _c(); }
+    void run() override { _c(); }
 
 private:
     Callable _c;
@@ -108,11 +116,18 @@ GstBusSyncReply messageHandler(GstBus * /*bus*/, GstMessage *msg, gpointer userD
 
         gst_message_parse_have_context(msg, &context);
 
+        const gchar* context_str = gst_context_get_context_type(context);
+        GST_DEBUG("GstContext %s", context_str);
+
         if (gst_context_has_context_type(context, GST_GL_DISPLAY_CONTEXT_TYPE))
+        {
             gst_element_set_context(priv->pipeline, context);
+        }
 
         if (context)
+        {
             gst_context_unref(context);
+        }
 
         gst_message_unref(msg);
 
@@ -159,6 +174,7 @@ VideoItem::VideoItem(QQuickItem *parent)
 
 VideoItem::~VideoItem()
 {
+    GST_DEBUG(__PRETTY_FUNCTION__);
     gst_bus_set_sync_handler(_priv->bus, nullptr, nullptr, nullptr); // stop handling messages
 
     gst_element_set_state(_priv->pipeline, GST_STATE_NULL);
@@ -182,6 +198,7 @@ void VideoItem::setSource(const QString &source)
     if (_priv->pattern == source)
         return;
 
+    GST_DEBUG("%s: %s", __PRETTY_FUNCTION__ , source.toStdString().c_str());
     _priv->pattern = source;
 
     stop();
@@ -200,6 +217,7 @@ void VideoItem::setSource(const QString &source)
 
 void VideoItem::play()
 {
+    GST_DEBUG(__PRETTY_FUNCTION__);
     if (_priv->state > STATE_NULL) {
         const auto status = gst_element_set_state(_priv->pipeline, GST_STATE_PLAYING);
 
@@ -210,6 +228,7 @@ void VideoItem::play()
 
 void VideoItem::stop()
 {
+    GST_DEBUG(__PRETTY_FUNCTION__);
     if (_priv->state > STATE_NULL) {
         const auto status = gst_element_set_state(_priv->pipeline, GST_STATE_READY);
 
@@ -220,9 +239,10 @@ void VideoItem::stop()
 
 void VideoItem::componentComplete()
 {
+    GST_DEBUG(__PRETTY_FUNCTION__);
     QQuickItem::componentComplete();
 
-    QQuickItem *videoItem = findChild<QQuickItem *>("videoItem");
+    auto videoItem = findChild<QQuickItem *>("videoItem");
     Q_ASSERT(videoItem); // should not fail: check VideoItem.qml
 
     // needed for proper OpenGL context setup for GStreamer elements (QtQuick renderer)
@@ -240,7 +260,7 @@ void VideoItem::componentComplete()
                 return;
             }
             case GST_STATE_CHANGE_SUCCESS:
-                Q_FALLTHROUGH();
+                [[fallthrough]] //Q_FALLTHROUGH();
             case GST_STATE_CHANGE_NO_PREROLL: {
                 target = current;
                 break;
@@ -253,9 +273,11 @@ void VideoItem::componentComplete()
 
             gst_element_set_state(_priv->pipeline, GST_STATE_NULL);
 
-            glsink = GST_ELEMENT(gst_object_ref(glsink));
+            // Why increment the object Ref ?
+//            glsink = GST_ELEMENT(gst_object_ref(glsink));
 
             window->scheduleRenderJob(new RenderJob([=] {
+                GST_DEBUG("Job: setRenderer (::BeforeSynchronizingStage)");
                 g_object_set(glsink, "widget", videoItem, nullptr);
                 _priv->renderPad = gst_element_get_static_pad(glsink, "sink");
                 g_object_set(_priv->sink, "sink", glsink, nullptr);
@@ -266,11 +288,15 @@ void VideoItem::componentComplete()
     };
 
     setRenderer(window());
-    connect(this, &QQuickItem::windowChanged, this, setRenderer);
+    connect(this, &QQuickItem::windowChanged, this, [=](QQuickWindow *window){
+      GST_DEBUG("On QQuickItem::windowChanged");
+      setRenderer(window);
+    });
 }
 
 void VideoItem::releaseResources()
 {
+    GST_DEBUG(__PRETTY_FUNCTION__);
     GstElement *sink { nullptr };
     QQuickWindow *win { window() };
 
@@ -283,7 +309,17 @@ void VideoItem::releaseResources()
     }
 
     connect(this, &VideoItem::destroyed, this, [sink, win] {
-        auto job = new RenderJob(std::bind(&gst_object_unref, sink));
+        GST_DEBUG("On VideoItem::destroyed");
+
+        GST_DEBUG("sink %d", GST_OBJECT_REFCOUNT(sink));
+
+//        gst_object_unref(sink);
+
+        // Schedule RenderJob is not executed when Qt::Quit
+        auto job = new RenderJob([sink]{
+            GST_DEBUG("Job: un::AfterSwapStage");
+            gst_object_unref(sink);
+        });
         win->scheduleRenderJob(job, QQuickWindow::AfterSwapStage);
     });
 }
@@ -292,6 +328,7 @@ void VideoItem::updateRect()
 {
     // WARNING: don't touch this
     if (!_priv->renderPad || _priv->state < STATE_PLAYING) {
+        GST_DEBUG("Don't touch this !");
         setRect(QRect(0, 0, 0, 0));
         setResolution(QSize(0, 0));
         return;

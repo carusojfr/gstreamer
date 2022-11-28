@@ -8,8 +8,8 @@ ApplicationWindow {
 
     minimumWidth: videowall.cellWidth * Math.sqrt(videowall.model.length) + videowall.leftMargin
     minimumHeight: videowall.cellHeight * Math.sqrt(videowall.model.length) + 32
-    maximumWidth: minimumWidth
-    maximumHeight: minimumHeight
+//    maximumWidth: minimumWidth
+//    maximumHeight: minimumHeight
 
     GridView {
         id: videowall
@@ -34,6 +34,14 @@ ApplicationWindow {
                 sourceComponent: VideoItem {
                     id: player
                     source: playing.checked ? modelData : ""
+                    MouseArea {
+                        id: mousearea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onPressed: {
+                            if(player.hasVideo) { player.stop(); } else { player.play(); }
+                        }
+                    }
                 }
             }
             Row {
@@ -54,6 +62,11 @@ ApplicationWindow {
                     height: controls.height
                     text: modelData
                 }
+                Button {
+                    width: height
+                    height: controls.height
+                    text: "QUIT";
+                    onClicked: { Qt.quit() } }
             }
         }
     }
